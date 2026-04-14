@@ -311,6 +311,9 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def send_message(self, chat_id: str, text: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
     async def edit_message(
         self,
         chat_id: str,

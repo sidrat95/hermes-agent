@@ -95,6 +95,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("thread", "Create a new Discord thread in a channel and optionally start a session", "Session",
+               gateway_only=True, args_hint="<channel_id> [title] [first message]"),
+    CommandDef("rename", "Rename the current Discord thread", "Session",
+               gateway_only=True, args_hint="[new name]"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",

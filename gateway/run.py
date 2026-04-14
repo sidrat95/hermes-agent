@@ -2792,6 +2792,12 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "thread":
+            return await self._handle_thread_command(event)
+
+        if canonical == "rename":
+            return await self._handle_rename_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -3802,6 +3808,30 @@ class GatewayRunner:
                             response, event, _media_adapter,
                         )
                 return None
+
+            # Intercept agent responses that start with /thread — execute
+            # the thread creation command instead of sending it as text.
+            # This lets the agent create Discord threads mid-conversation.
+            stripped = response.strip()
+            if stripped.startswith("/thread ") and source.platform.name == "DISCORD":
+                thread_args = stripped[len("/thread "):]
+                thread_result = await self._handle_thread_from_args(
+                    thread_args, source, event
+                )
+                if thread_result and thread_result.startswith("Failed"):
+                    response = f"⚠️ {thread_result}"
+                else:
+                    response = f"✅ {thread_result}"
+                stripped = response.strip()
+
+            # Intercept agent responses that start with /rename — rename current Discord thread
+            if stripped.startswith("/rename ") and source.platform.name == "DISCORD":
+                rename_args = stripped[len("/rename "):]
+                rename_result = await self._handle_rename_from_args(
+                    rename_args, source, event.message_id
+                )
+                response = rename_result
+                stripped = response.strip()
 
             return response
             
@@ -4905,6 +4935,109 @@ class GatewayRunner:
                 if adapter:
                     self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
                 return "Voice mode disabled."
+
+    async def _handle_thread_command(self, event: MessageEvent) -> str:
+        """Handle /thread <channel_id> [title] [first message] command."""
+        args = event.get_command_args().strip()
+        return await self._handle_thread_from_args(args, event.source, event)
+
+    async def _handle_thread_from_args(self, args: str, source, event) -> str:
+        """Create a thread from a raw args string.
+        
+        Used by both user slash commands and agent response interception.
+        """
+        adapter = self.adapters.get(source.platform)
+        args = args.strip()
+
+        if not args:
+            return (
+                "Usage: `/thread <channel_id> \"Thread Name\" [\"First message\"]`\n\n"
+                "Example: `/thread 1491551471387545660 \"Topic discussion\" \"Let's talk about this\"`\n\n"
+                "If called without a channel_id, uses the current channel as the parent."
+            )
+
+        # Parse args: first token might be a channel_id (all digits, 17-20 chars)
+        import shlex
+        try:
+            parts = shlex.split(args)
+        except ValueError:
+            # Fallback: fall back to space-split
+            parts = args.split()
+
+        if not parts:
+            return "Usage: `/thread <channel_id> \"Thread Name\" [\"First message\"]`"
+
+        channel_id = None
+        title = None
+        content = None
+
+        # Check if first arg looks like a Discord snowflake ID
+        first = parts[0]
+        if first.isdigit() and 17 <= len(first) <= 22:
+            channel_id = first
+            parts = parts[1:]
+
+        if not channel_id:
+            # Default to current channel
+            channel_id = source.chat_id
+
+        if parts:
+            title = parts[0]
+        if not title:
+            return "Thread name is required. Usage: `/thread <channel_id> \"Thread Name\" [\"First message\"]`"
+
+        if len(parts) > 1:
+            content = parts[1]
+
+        # Call the adapter's create_thread method
+        if adapter and hasattr(adapter, "create_thread"):
+            result = await adapter.create_thread(
+                channel_id=channel_id,
+                title=title,
+                content=content,
+            )
+
+            if result.get("success"):
+                thread_id = result.get("thread_id", "unknown")
+                url = result.get("url") or f"Thread ID: {thread_id}"
+                # If content was provided, dispatch a session in the new thread
+                if content and hasattr(adapter, "_dispatch_thread_session") and hasattr(event, "raw_message"):
+                    try:
+                        await adapter._dispatch_thread_session(
+                            event.raw_message,
+                            thread_id,
+                            title,
+                            content,
+                        )
+                    except Exception:
+                        pass
+                return f"Thread created successfully: {url}"
+            else:
+                return f"Failed to create thread: {result.get('error', 'unknown error')}"
+
+        return "Thread creation is not supported on this platform."
+
+    async def _handle_rename_command(self, event: MessageEvent) -> str:
+        """Handle /rename [new name] command — rename the current Discord thread."""
+        new_name = event.get_command_args().strip()
+        return await self._handle_rename_from_args(new_name, event.source, event.message_id)
+
+    async def _handle_rename_from_args(self, new_name: str, source, message_id) -> str:
+        """Rename the current thread. Takes raw name string for agent interception."""
+        if source.platform.name != "DISCORD":
+            return "Thread renaming is only supported on Discord."
+        thread_id = source.thread_id or source.chat_id
+        if not thread_id:
+            return "Not in a Discord thread."
+        if not new_name:
+            return "Provide a new name: `/rename New Name Here`"
+        adapter = self.adapters.get(source.platform)
+        if adapter and hasattr(adapter, "rename_thread"):
+            result = await adapter.rename_thread(thread_id, new_name)
+            if result.get("success"):
+                return f"Thread renamed to **{new_name}**"
+            return f"Failed to rename thread: {result.get('error', 'unknown error')}"
+        return "Thread renaming is not supported on this platform."
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""

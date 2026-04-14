@@ -953,13 +953,36 @@ class BasePlatformAdapter(ABC):
         """Disconnect from the platform."""
         pass
     
+    async def create_thread(
+        self,
+        channel_id: str,
+        title: str,
+        content: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> dict:
+        """Create a new thread (typically in a forum channel).
+
+        Default implementation raises NotImplementedError — subclasses override.
+
+        Args:
+            channel_id: The channel ID to create the thread in (forum or text).
+            title: Thread name / title.
+            content: Optional initial message content for the thread.
+            metadata: Optional extra metadata (e.g. tags, auto_archive_duration).
+
+        Returns:
+            dict with keys: success (bool), thread_id (str|None), url (str|None),
+            error (str|None).
+        """
+        return {"success": False, "thread_id": None, "url": None, "error": "create_thread not supported on this platform"}
+
     @abstractmethod
-    async def send(
+    async def send_message(
         self,
         chat_id: str,
-        content: str,
+        text: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send a message to a chat.

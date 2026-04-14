@@ -851,6 +851,9 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def send_message(self, chat_id: str, text: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+
     async def edit_message(
         self,
         chat_id: str,
@@ -1821,6 +1824,113 @@ class DiscordAdapter(BasePlatformAdapter):
 
     # ------------------------------------------------------------------
     # Thread creation helpers
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Public thread creation API (callable from gateway /thread handler)
+    # ------------------------------------------------------------------
+
+    async def rename_thread(
+        self,
+        thread_id: str,
+        new_name: str,
+    ) -> dict:
+        """Rename a Discord thread.
+
+        Returns dict with success, error keys.
+        """
+        if not self._client:
+            return {"success": False, "error": "Not connected"}
+        try:
+            channel = self._client.get_channel(int(thread_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(thread_id))
+            if not channel:
+                return {"success": False, "error": f"Thread {thread_id} not found"}
+            if not isinstance(channel, discord.Thread):
+                return {"success": False, "error": f"Channel {thread_id} is not a thread"}
+            await channel.edit(name=new_name)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def create_thread(
+        self,
+        channel_id: str,
+        title: str,
+        content: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> dict:
+        """Create a thread in a specific channel (forum or text).
+
+        This is the public API called by the gateway /thread handler.
+        Returns dict with success, thread_id, url, error keys.
+        """
+        if not self._client:
+            return {"success": False, "thread_id": None, "url": None, "error": "Not connected"}
+
+        meta = metadata or {}
+        auto_archive = int(meta.get("auto_archive_duration", 1440))
+        if auto_archive not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            auto_archive = 1440
+
+        try:
+            channel = self._client.get_channel(int(channel_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(channel_id))
+            if not channel:
+                return {"success": False, "thread_id": None, "url": None, "error": f"Channel {channel_id} not found"}
+        except Exception as e:
+            return {"success": False, "thread_id": None, "url": None, "error": f"Could not access channel: {e}"}
+
+        try:
+            # Text channel: create a public thread
+            if isinstance(channel, discord.TextChannel):
+                thread = await channel.create_thread(
+                    name=title,
+                    auto_archive_duration=auto_archive,
+                    reason=f"Created by Hermes via /thread",
+                )
+                if content:
+                    await thread.send(content)
+                self._track_thread(str(thread.id))
+                return {
+                    "success": True,
+                    "thread_id": str(thread.id),
+                    "url": f"https://discord.com/channels/{channel.guild.id}/{thread.id}" if channel.guild else None,
+                    "error": None,
+                }
+            # Forum channel: create a forum post (each forum post is a thread)
+            forum_cls = getattr(discord, "ForumChannel", None)
+            if forum_cls and isinstance(channel, forum_cls):
+                thread = await channel.create_thread(
+                    name=title,
+                    content=content or f"Thread created by Hermes",
+                    auto_archive_duration=auto_archive,
+                )
+                self._track_thread(str(thread.id))
+                return {
+                    "success": True,
+                    "thread_id": str(thread.id),
+                    "url": f"https://discord.com/channels/{channel.guild.id}/{thread.id}" if channel.guild else None,
+                    "error": None,
+                }
+            # Already a thread — send message into it instead
+            if isinstance(channel, discord.Thread):
+                if content:
+                    await channel.send(content)
+                return {
+                    "success": True,
+                    "thread_id": str(channel.id),
+                    "url": f"https://discord.com/channels/{channel.guild.id}/{channel.id}" if channel.guild else None,
+                    "error": None,
+                }
+            return {"success": False, "thread_id": None, "url": None, "error": f"Unsupported channel type: {type(channel).__name__}"}
+        except Exception as e:
+            return {"success": False, "thread_id": None, "url": None, "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Thread creation helpers (slash command)
     # ------------------------------------------------------------------
 
     async def _handle_thread_create_slash(
